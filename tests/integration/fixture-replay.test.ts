@@ -366,6 +366,112 @@ describe("fixture replay — golden bytes from Numaris → Lago Cloud", () => {
     expect((planEmbed["charges"] as unknown[]).length).toBe(2);
   });
 
+  it("04 — POST /events (add) returns the canonical event shape", async () => {
+    // Setup: customer + BM + plan + subscription matching the fixture's sub id.
+    await api.post("/customers", {
+      customer: { external_id: "carga-express-mx", currency: "MXN", timezone: "UTC" },
+    });
+    await api.post("/billable_metrics", {
+      billable_metric: {
+        name: "Unidades activas — Combustible",
+        code: "bm-carga-express-mx-combustible-7be0a53d",
+        aggregation_type: "unique_count_agg",
+        field_name: "unit_external_id",
+        recurring: true,
+      },
+    });
+    const bm = await api.get<{ billable_metric: { lago_id: string } }>(
+      "/billable_metrics/bm-carga-express-mx-combustible-7be0a53d",
+    );
+    await api.post("/plans", {
+      plan: {
+        name: "Plan",
+        code: "plan-events-replay",
+        interval: "monthly",
+        amount_cents: 0,
+        amount_currency: "MXN",
+        charges: [
+          {
+            billable_metric_id: bm.body.billable_metric.lago_id,
+            charge_model: "standard",
+            prorated: true,
+            properties: { amount: "450.00" },
+          },
+        ],
+      },
+    });
+    await api.post("/subscriptions", {
+      subscription: {
+        external_customer_id: "carga-express-mx",
+        plan_code: "plan-events-replay",
+        external_id: "sub-carga-express-mx-combustible-a681d853",
+        billing_time: "calendar",
+      },
+    });
+
+    const req = await loadJson<{ event: { timestamp: number } }>(
+      "04-events-add.request.json",
+    );
+    const res = await api.post<{ event: Record<string, unknown> }>(
+      "/events",
+      req,
+    );
+    expect(res.status).toBe(200);
+    const e = res.body.event;
+    expect(e["transaction_id"]).toBe(req.event && (req as { event: { transaction_id: string } }).event.transaction_id);
+    expect(e["external_subscription_id"]).toBe(
+      "sub-carga-express-mx-combustible-a681d853",
+    );
+    expect(e["code"]).toBe("bm-carga-express-mx-combustible-7be0a53d");
+    expect(e["lago_customer_id"]).toBeNull();
+    expect(e["lago_subscription_id"]).toBeNull();
+    expect(e["precise_total_amount_cents"]).toBeNull();
+    // Server normalises epoch seconds to ISO in the response.
+    expect(typeof e["timestamp"]).toBe("string");
+    expect(new Date(e["timestamp"] as string).getTime()).toBe(
+      req.event.timestamp * 1000,
+    );
+  });
+
+  it("05 — POST /events (remove) processes the remove and returns ISO timestamp", async () => {
+    // Reuses the setup from 04. If 04 didn't run, do an idempotent setup.
+    const getCust = await api.get("/customers/carga-express-mx");
+    if (getCust.status !== 200) {
+      await api.post("/customers", {
+        customer: {
+          external_id: "carga-express-mx",
+          currency: "MXN",
+          timezone: "UTC",
+        },
+      });
+    }
+    const getBm = await api.get(
+      "/billable_metrics/bm-carga-express-mx-combustible-7be0a53d",
+    );
+    if (getBm.status !== 200) {
+      await api.post("/billable_metrics", {
+        billable_metric: {
+          name: "Unidades activas — Combustible",
+          code: "bm-carga-express-mx-combustible-7be0a53d",
+          aggregation_type: "unique_count_agg",
+          field_name: "unit_external_id",
+          recurring: true,
+        },
+      });
+    }
+
+    const req = await loadJson<{ event: { timestamp: number } }>(
+      "05-events-remove.request.json",
+    );
+    const res = await api.post<{ event: Record<string, unknown> }>(
+      "/events",
+      req,
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.event["lago_customer_id"]).toBeNull();
+    expect(res.body.event["lago_subscription_id"]).toBeNull();
+  });
+
   it("PUT /customers/:external_id returns Lago's 404 resource_not_found", async () => {
     const res = await api.put<{ status: number; code: string }>(
       "/customers/carga-express-mx",
