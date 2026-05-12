@@ -16,6 +16,7 @@ export const addOns = pgTable(
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
+    invoiceDisplayName: text("invoice_display_name"),
     code: text("code").notNull(),
     description: text("description"),
     amountCents: bigint("amount_cents", { mode: "number" }).notNull(),

@@ -6,6 +6,7 @@ import { buildAuthMiddleware } from "./lib/auth.js";
 import { errorMiddleware, notFound } from "./lib/errors.js";
 import { buildCustomersRouter } from "./routes/customers.js";
 import { buildTaxesRouter } from "./routes/taxes.js";
+import { buildAddOnsRouter } from "./routes/add_ons.js";
 
 export function buildApp(db: DB, logger: Logger): Express {
   const app = express();
@@ -21,6 +22,7 @@ export function buildApp(db: DB, logger: Logger): Express {
   api.use(buildAuthMiddleware(db));
   api.use(buildCustomersRouter(db));
   api.use(buildTaxesRouter(db));
+  api.use(buildAddOnsRouter(db));
 
   app.use("/api/v1", api);
 

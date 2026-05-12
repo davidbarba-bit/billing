@@ -182,6 +182,68 @@ describe("fixture replay — golden bytes from Numaris → Lago Cloud", () => {
     expect(customer["tax_identification_number"]).toBe("CEM250101AAA");
   });
 
+  it("09a — POST /add_ons (mensual) returns the canonical add-on shape", async () => {
+    const req = await loadJson("09a-addons-monthly.request.json");
+    const expected = await loadJson<{ add_on: Record<string, unknown> }>(
+      "09a-addons-monthly.response.json",
+    );
+
+    const res = await api.post<{ add_on: Record<string, unknown> }>(
+      "/add_ons",
+      req,
+    );
+    expect(res.status).toBe(200);
+
+    const actual = stripVolatile(res.body) as {
+      add_on: Record<string, unknown>;
+    };
+    const want = stripVolatile(expected) as {
+      add_on: Record<string, unknown>;
+    };
+    expect(actual).toEqual(want);
+  });
+
+  it("09b — POST /add_ons (setup) returns the canonical add-on shape", async () => {
+    const req = await loadJson("09b-addons-setup.request.json");
+    const expected = await loadJson<{ add_on: Record<string, unknown> }>(
+      "09b-addons-setup.response.json",
+    );
+
+    const res = await api.post<{ add_on: Record<string, unknown> }>(
+      "/add_ons",
+      req,
+    );
+    expect(res.status).toBe(200);
+
+    const actual = stripVolatile(res.body) as {
+      add_on: Record<string, unknown>;
+    };
+    const want = stripVolatile(expected) as {
+      add_on: Record<string, unknown>;
+    };
+    expect(actual).toEqual(want);
+  });
+
+  it("10 — GET /add_ons/:code matches the canonical shape", async () => {
+    await api.post("/add_ons", await loadJson("09a-addons-monthly.request.json"));
+    const expected = await loadJson<{ add_on: Record<string, unknown> }>(
+      "10-addons-get.response.json",
+    );
+
+    const res = await api.get<{ add_on: Record<string, unknown> }>(
+      "/add_ons/cobro-carga-express-mx-combustible",
+    );
+    expect(res.status).toBe(200);
+
+    const actual = stripVolatile(res.body) as {
+      add_on: Record<string, unknown>;
+    };
+    const want = stripVolatile(expected) as {
+      add_on: Record<string, unknown>;
+    };
+    expect(actual).toEqual(want);
+  });
+
   it("PUT /customers/:external_id returns Lago's 404 resource_not_found", async () => {
     const res = await api.put<{ status: number; code: string }>(
       "/customers/carga-express-mx",
