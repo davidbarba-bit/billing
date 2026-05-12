@@ -5,18 +5,22 @@ import { TestClient } from "../helpers/http.js";
 import { loadLagoSdk } from "../helpers/lago-sdk.js";
 import { customerTaxes } from "../../src/db/schema/index.js";
 
-type TaxBody = {
-  tax: {
-    lago_id: string;
-    name: string;
-    code: string;
-    rate: number;
-    applied_to_organization: boolean;
-  };
+type Tax = {
+  lago_id: string;
+  name: string;
+  code: string;
+  rate: number;
+  applied_to_organization: boolean;
+  add_ons_count: number;
+  customers_count: number;
+  plans_count: number;
+  charges_count: number;
+  commitments_count: number;
 };
 
+type TaxBody = { tax: Tax };
 type TaxListBody = {
-  taxes: Array<TaxBody["tax"]>;
+  taxes: Tax[];
   meta: { current_page: number; total_count: number };
 };
 
@@ -33,7 +37,7 @@ describe("taxes", () => {
     if (harness) await harness.close();
   });
 
-  it("creates a tax and returns it serialized", async () => {
+  it("creates a tax with counters and Lago-canonical shape", async () => {
     const res = await api.post<TaxBody>("/taxes", {
       tax: {
         name: "IVA",
@@ -42,22 +46,38 @@ describe("taxes", () => {
         description: "IVA Mexico",
       },
     });
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(200);
     expect(res.body.tax.code).toBe("iva_mx");
     expect(res.body.tax.rate).toBe(16);
     expect(res.body.tax.applied_to_organization).toBe(false);
+    expect(res.body.tax.customers_count).toBe(0);
+    expect(res.body.tax.add_ons_count).toBe(0);
+    expect(res.body.tax.plans_count).toBe(0);
+    expect(res.body.tax.charges_count).toBe(0);
+    expect(res.body.tax.commitments_count).toBe(0);
   });
 
-  it("upserts an existing tax (200)", async () => {
+  it("accepts rate as a string (Numaris/SDK behavior)", async () => {
+    const res = await api.post<TaxBody>("/taxes", {
+      tax: { name: "IVA Str", code: "iva_str", rate: "16" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.tax.rate).toBe(16);
+  });
+
+  it("returns 422 value_already_exist on duplicate code (strict Lago)", async () => {
     await api.post("/taxes", {
       tax: { name: "VAT", code: "vat_test", rate: 19 },
     });
-    const second = await api.post<TaxBody>("/taxes", {
-      tax: { name: "VAT EU", code: "vat_test", rate: 21 },
+    const second = await api.post<{
+      code: string;
+      error_details: Record<string, string[]>;
+    }>("/taxes", { tax: { name: "VAT EU", code: "vat_test", rate: 21 } });
+    expect(second.status).toBe(422);
+    expect(second.body.code).toBe("validation_errors");
+    expect(second.body.error_details).toEqual({
+      code: ["value_already_exist"],
     });
-    expect(second.status).toBe(200);
-    expect(second.body.tax.rate).toBe(21);
-    expect(second.body.tax.name).toBe("VAT EU");
   });
 
   it("rejects invalid rate (>100)", async () => {
@@ -65,7 +85,7 @@ describe("taxes", () => {
       tax: { name: "Bad", code: "bad_rate", rate: 250 },
     });
     expect(res.status).toBe(422);
-    expect(res.body.code).toBe("validation_error");
+    expect(res.body.code).toBe("validation_errors");
   });
 
   it("rejects missing required fields", async () => {
@@ -73,7 +93,7 @@ describe("taxes", () => {
       tax: { name: "Missing code", rate: 10 },
     });
     expect(res.status).toBe(422);
-    expect(res.body.code).toBe("validation_error");
+    expect(res.body.code).toBe("validation_errors");
   });
 
   it("retrieves a tax by code", async () => {
@@ -108,15 +128,13 @@ describe("taxes", () => {
     expect(after.status).toBe(404);
   });
 
-  it("auto-applies an org-wide tax to existing customers", async () => {
-    // Create a customer first.
+  it("auto-applies an org-wide tax to existing customers + reflects counters", async () => {
     const custRes = await api.post<{ customer: { lago_id: string } }>(
       "/customers",
       { customer: { external_id: "cust_for_tax", currency: "MXN" } },
     );
     const customerId = custRes.body.customer.lago_id;
 
-    // Now create an org-wide tax.
     const taxRes = await api.post<TaxBody>("/taxes", {
       tax: {
         name: "Org IVA",
@@ -125,10 +143,10 @@ describe("taxes", () => {
         applied_to_organization: true,
       },
     });
-    expect(taxRes.status).toBe(201);
+    expect(taxRes.status).toBe(200);
     const taxId = taxRes.body.tax.lago_id;
+    expect(taxRes.body.tax.customers_count).toBeGreaterThanOrEqual(1);
 
-    // Inspect the customer_taxes join directly.
     const links = await harness.db
       .select()
       .from(customerTaxes)
@@ -164,7 +182,9 @@ describe("taxes", () => {
     const other = await startTestServer();
     try {
       const otherClient = new TestClient(other.baseUrl, other.apiKey);
-      const res = await otherClient.get<{ code: string }>("/taxes/tax_tenant_a");
+      const res = await otherClient.get<{ code: string }>(
+        "/taxes/tax_tenant_a",
+      );
       expect(res.status).toBe(404);
     } finally {
       await other.close();
@@ -185,8 +205,9 @@ describe("taxes", () => {
     };
     const result = (await client.taxes.createTax({
       tax: { name: "SDK Tax", code: "sdk_tax", rate: 12 },
-    })) as { data?: { tax?: { code?: string } } };
-    const tax = result?.data?.tax ?? (result as { tax?: { code?: string } }).tax;
+    })) as { data?: { tax?: Tax } };
+    const tax = result?.data?.tax ?? (result as { tax?: Tax }).tax;
     expect(tax?.code).toBe("sdk_tax");
+    expect(tax?.customers_count).toBe(0);
   });
 });

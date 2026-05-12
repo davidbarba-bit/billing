@@ -3,18 +3,35 @@ import { startTestServer, type TestHarness } from "../helpers/server.js";
 import { TestClient } from "../helpers/http.js";
 import { loadLagoSdk } from "../helpers/lago-sdk.js";
 
-type CustomerBody = {
-  customer: {
-    lago_id: string;
-    external_id: string;
-    name: string | null;
-    email: string | null;
-    currency: string | null;
-  };
+type EmbeddedTax = {
+  lago_id: string;
+  code: string;
+  rate: number;
+  customers_count: number;
 };
 
+type Customer = {
+  lago_id: string;
+  external_id: string;
+  name: string | null;
+  email: string | null;
+  currency: string | null;
+  tax_identification_number: string | null;
+  country: string | null;
+  sequential_id: number;
+  slug: string;
+  applicable_timezone: string;
+  finalize_zero_amount_invoice: string;
+  metadata: unknown[];
+  taxes: EmbeddedTax[];
+  integration_customers: unknown[];
+  billing_configuration: Record<string, unknown>;
+  shipping_address: Record<string, unknown>;
+};
+
+type CustomerBody = { customer: Customer };
 type CustomerListBody = {
-  customers: Array<CustomerBody["customer"]>;
+  customers: Customer[];
   meta: { current_page: number; total_pages: number; total_count: number };
 };
 
@@ -48,45 +65,94 @@ describe("customers", () => {
     expect(body.code).toBe("invalid_api_key");
   });
 
-  it("creates a customer with currency/timezone and returns lago_id", async () => {
+  it("creates a customer with the full Lago-canonical shape", async () => {
     const res = await api.post<CustomerBody>("/customers", {
       customer: {
         external_id: "cust_001",
         name: "Acme Corp",
         email: "hi@acme.test",
         currency: "USD",
+        country: "US",
         timezone: "America/Mexico_City",
+        tax_identification_number: "ACME250101AAA",
       },
     });
-    expect(res.status).toBe(201);
-    expect(res.body.customer.external_id).toBe("cust_001");
-    expect(res.body.customer.name).toBe("Acme Corp");
-    expect(res.body.customer.email).toBe("hi@acme.test");
-    expect(res.body.customer.currency).toBe("USD");
-    expect(typeof res.body.customer.lago_id).toBe("string");
+    expect(res.status).toBe(200);
+    const c = res.body.customer;
+    expect(c.external_id).toBe("cust_001");
+    expect(c.name).toBe("Acme Corp");
+    expect(c.email).toBe("hi@acme.test");
+    expect(c.currency).toBe("USD");
+    expect(c.country).toBe("US");
+    expect(c.tax_identification_number).toBe("ACME250101AAA");
+    expect(c.applicable_timezone).toBe("America/Mexico_City");
+    expect(c.finalize_zero_amount_invoice).toBe("inherit");
+    expect(c.metadata).toEqual([]);
+    expect(c.taxes).toEqual([]);
+    expect(c.integration_customers).toEqual([]);
+    expect(c.sequential_id).toBeGreaterThan(0);
+    expect(c.slug).toMatch(/^[A-Z]{3}-[0-9A-F]{4}-\d{3,}$/u);
+    expect(typeof c.lago_id).toBe("string");
   });
 
-  it("upserts (200) when external_id already exists", async () => {
+  it("falls back applicable_timezone to UTC when none set", async () => {
+    const res = await api.post<CustomerBody>("/customers", {
+      customer: { external_id: "cust_no_tz" },
+    });
+    expect(res.body.customer.applicable_timezone).toBe("UTC");
+  });
+
+  it("returns 422 value_already_exist on duplicate external_id (strict Lago)", async () => {
     const first = await api.post<CustomerBody>("/customers", {
-      customer: { external_id: "cust_upsert", name: "v1" },
+      customer: { external_id: "cust_dup", name: "v1" },
     });
-    expect(first.status).toBe(201);
+    expect(first.status).toBe(200);
 
-    const second = await api.post<CustomerBody>("/customers", {
-      customer: { external_id: "cust_upsert", name: "v2" },
+    const second = await api.post<{
+      code: string;
+      error_details: Record<string, string[]>;
+    }>("/customers", { customer: { external_id: "cust_dup", name: "v2" } });
+    expect(second.status).toBe(422);
+    expect(second.body.code).toBe("validation_errors");
+    expect(second.body.error_details).toEqual({
+      external_id: ["value_already_exist"],
     });
-    expect(second.status).toBe(200);
-    expect(second.body.customer.name).toBe("v2");
-    expect(second.body.customer.lago_id).toBe(first.body.customer.lago_id);
   });
 
-  it("rejects 422 with validation_error when external_id is missing", async () => {
+  it("links tax_codes provided at create time", async () => {
+    await api.post("/taxes", {
+      tax: { name: "IVA Linked", code: "iva_linked", rate: 16 },
+    });
+    const res = await api.post<CustomerBody>("/customers", {
+      customer: {
+        external_id: "cust_tax_codes",
+        currency: "MXN",
+        tax_codes: ["iva_linked"],
+      },
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.customer.taxes.map((t) => t.code)).toContain("iva_linked");
+  });
+
+  it("rejects unknown tax_codes with 422 / validation_errors", async () => {
+    const res = await api.post<{
+      code: string;
+      error_details: Record<string, string[]>;
+    }>("/customers", {
+      customer: { external_id: "cust_bad_tax", tax_codes: ["nope"] },
+    });
+    expect(res.status).toBe(422);
+    expect(res.body.code).toBe("validation_errors");
+    expect(res.body.error_details["tax_codes"]).toEqual(["value_is_invalid"]);
+  });
+
+  it("rejects 422 with validation_errors when external_id is missing", async () => {
     const res = await api.post<{ code: string; error_details: unknown }>(
       "/customers",
       { customer: { name: "no id" } },
     );
     expect(res.status).toBe(422);
-    expect(res.body.code).toBe("validation_error");
+    expect(res.body.code).toBe("validation_errors");
     expect(res.body.error_details).toBeDefined();
   });
 
@@ -95,7 +161,15 @@ describe("customers", () => {
       customer: { external_id: "cust_bad_ccy", currency: "us" },
     });
     expect(res.status).toBe(422);
-    expect(res.body.code).toBe("validation_error");
+    expect(res.body.code).toBe("validation_errors");
+  });
+
+  it("validates country is a 2-letter ISO code", async () => {
+    const res = await api.post<{ code: string }>("/customers", {
+      customer: { external_id: "cust_bad_country", country: "mexico" },
+    });
+    expect(res.status).toBe(422);
+    expect(res.body.code).toBe("validation_errors");
   });
 
   it("rejects malformed JSON with 400", async () => {
@@ -119,6 +193,7 @@ describe("customers", () => {
     const res = await api.get<CustomerBody>("/customers/cust_read");
     expect(res.status).toBe(200);
     expect(res.body.customer.external_id).toBe("cust_read");
+    expect(res.body.customer.slug).toMatch(/^[A-Z]{3}-[0-9A-F]{4}-\d{3,}$/u);
   });
 
   it("returns 404 for unknown customer", async () => {
@@ -153,12 +228,10 @@ describe("customers", () => {
   });
 
   it("isolates customers across organizations", async () => {
-    // Create a customer in our org
     await api.post("/customers", {
       customer: { external_id: "cust_tenant_a" },
     });
 
-    // Spin a second harness (separate org) and confirm it cannot see it.
     const other = await startTestServer();
     try {
       const otherClient = new TestClient(other.baseUrl, other.apiKey);
@@ -183,7 +256,6 @@ describe("customers", () => {
     const client = sdk.client as {
       customers: {
         createCustomer: (body: unknown) => Promise<unknown>;
-        findCustomer?: (id: string) => Promise<unknown>;
       };
     };
     const result = (await client.customers.createCustomer({
@@ -191,11 +263,13 @@ describe("customers", () => {
         external_id: "cust_sdk",
         name: "SDK Customer",
         currency: "EUR",
+        country: "FR",
       },
-    })) as { data?: { customer?: { external_id?: string } } };
+    })) as { data?: { customer?: Customer } };
 
-    // Recent SDK versions return { data, response } shaped objects.
-    const customer = result?.data?.customer ?? (result as { customer?: { external_id?: string } }).customer;
+    const customer =
+      result?.data?.customer ?? (result as { customer?: Customer }).customer;
     expect(customer?.external_id).toBe("cust_sdk");
+    expect(customer?.country).toBe("FR");
   });
 });

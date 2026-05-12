@@ -20,18 +20,66 @@ export const IntegrationCustomerSchema = z
   })
   .passthrough();
 
+export const ShippingAddressSchema = z
+  .object({
+    address_line1: z.string().nullish(),
+    address_line2: z.string().nullish(),
+    city: z.string().nullish(),
+    state: z.string().nullish(),
+    zipcode: z.string().nullish(),
+    country: z.string().nullish(),
+  })
+  .passthrough();
+
+const nullableString = z.string().nullish();
+
 export const CustomerInputSchema = z.object({
   external_id: z.string().min(1),
-  name: z.string().optional(),
-  email: z.string().email().optional().or(z.literal("")),
+
+  // Identity
+  name: nullableString,
+  firstname: nullableString,
+  lastname: nullableString,
+  customer_type: z.enum(["company", "individual"]).nullish(),
+  legal_name: nullableString,
+  legal_number: nullableString,
+  tax_identification_number: nullableString,
+  email: z.string().email().nullish().or(z.literal("")),
+  phone: nullableString,
+  url: nullableString,
+  logo_url: nullableString,
+
+  // Address
+  address_line1: nullableString,
+  address_line2: nullableString,
+  city: nullableString,
+  state: nullableString,
+  zipcode: nullableString,
+  country: z
+    .string()
+    .regex(/^[A-Z]{2}$/u, "country must be a 2-letter ISO code")
+    .nullish(),
+
+  // Money / locale
   currency: z
     .string()
     .regex(/^[A-Z]{3}$/u, "currency must be a 3-letter ISO code")
-    .optional(),
-  timezone: z.string().optional(),
-  billing_configuration: BillingConfigurationSchema.optional(),
-  integration_customers: z.array(IntegrationCustomerSchema).optional(),
-  metadata: z.array(z.record(z.string(), z.unknown())).optional(),
+    .nullish(),
+  timezone: nullableString,
+  net_payment_term: z.number().int().nonnegative().nullish(),
+  external_salesforce_id: nullableString,
+  finalize_zero_amount_invoice: z
+    .enum(["inherit", "finalize", "skip"])
+    .nullish(),
+
+  // Embeds
+  billing_configuration: BillingConfigurationSchema.nullish(),
+  shipping_address: ShippingAddressSchema.nullish(),
+  integration_customers: z.array(IntegrationCustomerSchema).nullish(),
+  metadata: z.array(z.record(z.string(), z.unknown())).nullish(),
+
+  // Tax linkage (Lago: array of tax codes already known)
+  tax_codes: z.array(z.string()).nullish(),
 });
 
 export const CreateCustomerRequest = z.object({
@@ -40,19 +88,3 @@ export const CreateCustomerRequest = z.object({
 
 export type CreateCustomerRequest = z.infer<typeof CreateCustomerRequest>;
 export type CustomerInput = z.infer<typeof CustomerInputSchema>;
-
-export const CustomerResponseSchema = z.object({
-  lago_id: z.string().uuid(),
-  external_id: z.string(),
-  name: z.string().nullable(),
-  email: z.string().nullable(),
-  currency: z.string().nullable(),
-  timezone: z.string().nullable(),
-  billing_configuration: z.unknown().nullable(),
-  integration_customers: z.unknown().nullable(),
-  metadata: z.unknown().nullable(),
-  created_at: z.string(),
-  updated_at: z.string(),
-});
-
-export type CustomerResponse = z.infer<typeof CustomerResponseSchema>;

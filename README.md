@@ -103,18 +103,33 @@ against a real Postgres — see `tests/helpers/lago-sdk.ts`.
 
 ### Customer semantics
 
-- Idempotent on `(organization_id, external_id)`: a second `POST` with the same
-  `external_id` updates the existing row and returns `200` (first create
-  returns `201`). Matches Lago's "create-or-update" behavior.
+- **Strict create** on `(organization_id, external_id)`: matches Lago's real
+  behavior. A second `POST` with the same `external_id` returns
+  `422 validation_errors` with
+  `error_details.external_id: ["value_already_exist"]`.
+- `tax_codes: ["iva-mx-16"]` at create time links the customer to the listed
+  taxes (validated against existing taxes; unknown codes → 422).
+- Response shape matches Lago's canonical customer (all nullable fields
+  present, `metadata: []`, `taxes: [...]` embedded, `billing_configuration`
+  and `shipping_address` with default null keys, `applicable_timezone` falls
+  back to `"UTC"`).
+- `sequential_id` is per-org auto-increment; `slug` is `{ORG3}-{HASH4}-{NNN}`
+  (e.g. `NUM-FC2D-009`).
 - Soft delete: `DELETE` flips `deleted_at` and subsequent reads return 404.
 
 ### Tax semantics
 
-- Idempotent on `(organization_id, code)`.
+- **Strict create** on `(organization_id, code)` — duplicates return
+  `422 validation_errors` with
+  `error_details.code: ["value_already_exist"]` (matches Lago).
+- `rate` accepts both string (`"16"`) and number (`16`); always returned as
+  a number.
 - `applied_to_organization: true` links the tax to every customer in the org
-  (existing **and** future). The link lives in the `customer_taxes` table; the
-  billing engine joins through that table when computing invoice taxes.
-- `rate` is a percentage (`16.0` ≡ 16 % VAT).
+  (existing **and** future). The link lives in the `customer_taxes` table.
+- Counters (`customers_count`, `add_ons_count`, `plans_count`,
+  `charges_count`, `commitments_count`) are computed on the fly. Until the
+  corresponding resources land in phase 2-3, the non-customer counters are
+  `0`.
 
 ## Error shape
 
@@ -124,18 +139,21 @@ Every error response uses the Lago body:
 {
   "status": 422,
   "error": "Unprocessable Entity",
-  "code": "validation_error",
-  "error_details": { "customer.currency": ["currency must be a 3-letter ISO code"] }
+  "code": "validation_errors",
+  "error_details": { "external_id": ["value_already_exist"] }
 }
 ```
 
-| HTTP | When |
-| - | - |
-| `400` | Malformed JSON |
-| `401` | Missing or invalid bearer token |
-| `404` | Resource not found |
-| `409` | Idempotent retry with conflicting body |
-| `422` | Validation error |
+Reason codes inside `error_details.<field>` follow Lago's vocabulary:
+`value_already_exist`, `value_is_invalid`, `value_is_blank`,
+`value_is_out_of_range`.
+
+| HTTP | `code` | When |
+| - | - | - |
+| `400` | `malformed_json` | Body isn't valid JSON |
+| `401` | `missing_bearer_token` / `invalid_api_key` | Auth |
+| `404` | `<resource>_not_found` | Resource lookup miss |
+| `422` | `validation_errors` | Schema / duplicate / unknown reference |
 
 ## Tests
 

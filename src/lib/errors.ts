@@ -65,9 +65,34 @@ export function fromZodError(err: z.ZodError): LagoError {
   for (const issue of err.issues) {
     const path = issue.path.length === 0 ? "_root" : issue.path.join(".");
     if (!details[path]) details[path] = [];
-    details[path].push(issue.message);
+    details[path].push(toLagoReason(issue));
   }
-  return unprocessable("validation_error", "Unprocessable Entity", details);
+  return unprocessable("validation_errors", "Unprocessable Entity", details);
+}
+
+/**
+ * Maps a Zod issue to a Lago-style reason code. Lago uses short snake_case
+ * reasons (`value_already_exist`, `value_is_invalid`, `value_is_blank`,
+ * `value_is_out_of_range`) inside `error_details.<field>` arrays. Anything
+ * unrecognized falls through to the original Zod message — better than a
+ * generic placeholder when debugging.
+ */
+function toLagoReason(issue: z.ZodIssue): string {
+  switch (issue.code) {
+    case "invalid_type":
+      return issue.message.toLowerCase().includes("required")
+        ? "value_is_blank"
+        : "value_is_invalid";
+    case "too_small":
+      return "value_is_blank";
+    case "too_big":
+      return "value_is_out_of_range";
+    case "invalid_format":
+    case "invalid_value":
+      return "value_is_invalid";
+    default:
+      return issue.message;
+  }
 }
 
 export function errorMiddleware(

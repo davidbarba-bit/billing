@@ -9,14 +9,49 @@ import {
 } from "../db/schema/index.js";
 import { requireOrg } from "../lib/auth.js";
 import { asyncHandler, pathParam } from "../lib/async.js";
-import { notFound } from "../lib/errors.js";
+import { notFound, unprocessable } from "../lib/errors.js";
 import { PaginationQuery, buildMeta } from "../lib/pagination.js";
-import {
-  CreateTaxRequest,
-  type TaxResponse,
-} from "../schemas/taxes.js";
+import { CreateTaxRequest } from "../schemas/taxes.js";
 
-export function serializeTax(t: Tax): TaxResponse {
+export type EmbeddedTax = {
+  lago_id: string;
+  name: string;
+  code: string;
+  rate: number;
+  description: string | null;
+  applied_to_organization: boolean;
+  add_ons_count: number;
+  customers_count: number;
+  plans_count: number;
+  charges_count: number;
+  commitments_count: number;
+  created_at: string;
+};
+
+/**
+ * Builds the Lago-canonical tax payload, computing live counters via SQL.
+ * `add_ons_count`, `plans_count`, `charges_count`, `commitments_count` are
+ * always 0 until the corresponding resources land (phases 2 and 3); they're
+ * still emitted so consumers don't break on missing keys.
+ */
+export async function serializeTaxEmbedded(
+  db: DB,
+  orgId: string,
+  t: Tax,
+): Promise<EmbeddedTax> {
+  // customers_count: linked customers that haven't been soft-deleted.
+  const customerCountRows = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(customerTaxes)
+    .innerJoin(customers, eq(customers.id, customerTaxes.customerId))
+    .where(
+      and(
+        eq(customerTaxes.taxId, t.id),
+        eq(customers.organizationId, orgId),
+        sql`${customers.deletedAt} is null`,
+      ),
+    );
+
   return {
     lago_id: t.id,
     name: t.name,
@@ -24,6 +59,11 @@ export function serializeTax(t: Tax): TaxResponse {
     rate: Number(t.rate),
     description: t.description ?? null,
     applied_to_organization: t.appliedToOrganization,
+    add_ons_count: 0,
+    customers_count: customerCountRows[0]?.count ?? 0,
+    plans_count: 0,
+    charges_count: 0,
+    commitments_count: 0,
     created_at: t.createdAt.toISOString(),
   };
 }
@@ -31,22 +71,28 @@ export function serializeTax(t: Tax): TaxResponse {
 export function buildTaxesRouter(db: DB): Router {
   const router = Router();
 
-  // POST /taxes — upsert on (organization_id, code)
+  // POST /taxes — STRICT: 422 on duplicate code (Lago behavior).
   router.post(
     "/taxes",
     asyncHandler(async (req, res) => {
       const org = requireOrg(req);
-      const parsed = CreateTaxRequest.parse(req.body);
-      const input = parsed.tax;
+      const { tax: input } = CreateTaxRequest.parse(req.body);
 
-      const result = await db.transaction(async (tx) => {
+      const tax = await db.transaction(async (tx) => {
         const [existing] = await tx
-          .select()
+          .select({ id: taxes.id })
           .from(taxes)
           .where(
             and(eq(taxes.organizationId, org.id), eq(taxes.code, input.code)),
           )
           .limit(1);
+        if (existing) {
+          throw unprocessable(
+            "validation_errors",
+            "Unprocessable Entity",
+            { code: ["value_already_exist"] },
+          );
+        }
 
         const values = {
           organizationId: org.id,
@@ -55,29 +101,11 @@ export function buildTaxesRouter(db: DB): Router {
           rate: input.rate.toString(),
           description: input.description ?? null,
           appliedToOrganization: input.applied_to_organization ?? false,
-          updatedAt: new Date(),
         };
+        const [inserted] = await tx.insert(taxes).values(values).returning();
+        if (!inserted) throw new Error("insert tax failed");
 
-        let tax: Tax;
-        let created: boolean;
-        if (existing) {
-          const [updated] = await tx
-            .update(taxes)
-            .set(values)
-            .where(eq(taxes.id, existing.id))
-            .returning();
-          if (!updated) throw new Error("update tax failed");
-          tax = updated;
-          created = false;
-        } else {
-          const [inserted] = await tx.insert(taxes).values(values).returning();
-          if (!inserted) throw new Error("insert tax failed");
-          tax = inserted;
-          created = true;
-        }
-
-        // If applied_to_organization, link to every existing customer.
-        if (tax.appliedToOrganization) {
+        if (inserted.appliedToOrganization) {
           const rows = await tx
             .select({ id: customers.id })
             .from(customers)
@@ -85,24 +113,22 @@ export function buildTaxesRouter(db: DB): Router {
           if (rows.length > 0) {
             await tx
               .insert(customerTaxes)
-              .values(rows.map((c) => ({ customerId: c.id, taxId: tax.id })))
+              .values(
+                rows.map((c) => ({ customerId: c.id, taxId: inserted.id })),
+              )
               .onConflictDoNothing();
           }
-        } else if (existing) {
-          // If it was previously applied but is no longer org-wide, leave
-          // existing per-customer links untouched (Lago semantics).
         }
-
-        return { tax, created };
+        return inserted;
       });
 
       res
-        .status(result.created ? 201 : 200)
-        .json({ tax: serializeTax(result.tax) });
+        .status(200)
+        .json({ tax: await serializeTaxEmbedded(db, org.id, tax) });
     }),
   );
 
-  // GET /taxes
+  // GET /taxes — list
   router.get(
     "/taxes",
     asyncHandler(async (req, res) => {
@@ -125,8 +151,12 @@ export function buildTaxesRouter(db: DB): Router {
         .where(where);
       const total = countRows[0]?.count ?? 0;
 
+      const serialized = await Promise.all(
+        rows.map((r) => serializeTaxEmbedded(db, org.id, r)),
+      );
+
       res.json({
-        taxes: rows.map(serializeTax),
+        taxes: serialized,
         meta: buildMeta(page, per_page, total),
       });
     }),
@@ -144,7 +174,7 @@ export function buildTaxesRouter(db: DB): Router {
         .where(and(eq(taxes.organizationId, org.id), eq(taxes.code, code)))
         .limit(1);
       if (!row) throw notFound("tax");
-      res.json({ tax: serializeTax(row) });
+      res.json({ tax: await serializeTaxEmbedded(db, org.id, row) });
     }),
   );
 
@@ -160,8 +190,10 @@ export function buildTaxesRouter(db: DB): Router {
         .where(and(eq(taxes.organizationId, org.id), eq(taxes.code, code)))
         .limit(1);
       if (!row) throw notFound("tax");
+      // Snapshot the embedded shape BEFORE the delete cascades the join rows.
+      const embedded = await serializeTaxEmbedded(db, org.id, row);
       await db.delete(taxes).where(eq(taxes.id, row.id));
-      res.json({ tax: serializeTax(row) });
+      res.json({ tax: embedded });
     }),
   );
 
