@@ -4,9 +4,13 @@ Self-hosted, Lago-compatible billing engine — a re-implementation (not a wrapp
 of the [Lago](https://github.com/getlago/lago) REST API surface used by
 `lago-javascript-client`.
 
-> Status: **phase 1** — bootstrap, schema, `customers`, and `taxes` resources.
-> Billing engine (events, plans, subscriptions, current usage, invoices,
-> credit notes, webhooks, period cron) lands in subsequent phases.
+> Status: **phase 2 complete** — billing engine end-to-end except invoices,
+> credit notes, webhooks, and the period-closing cron (phase 3). Currently
+> implemented: `customers`, `taxes`, `add_ons`, `billable_metrics`, `plans`
+> (+ charges), `subscriptions` (timezone-aware periods),
+> `events` (with `subscription_units` lifecycle), and `current_usage`
+> (prorated + non-prorated `unique_count_agg`, banker's rounding, tax
+> application).
 
 ## Why
 
@@ -87,19 +91,45 @@ console.log(data.customer.lago_id);
 The integration tests in `tests/integration/*.test.ts` use the real SDK
 against a real Postgres — see `tests/helpers/lago-sdk.ts`.
 
-## Implemented endpoints (phase 1)
+## Implemented endpoints
 
 | Method | Path | SDK call |
 | - | - | - |
-| `POST` | `/api/v1/customers` | `lago.customers.createCustomer` |
+| `POST` | `/api/v1/customers` | `lago.customers.createCustomer` (upsert) |
 | `GET` | `/api/v1/customers` | `lago.customers.findAllCustomers` |
 | `GET` | `/api/v1/customers/:external_id` | `lago.customers.findCustomer` |
 | `DELETE` | `/api/v1/customers/:external_id` | `lago.customers.destroyCustomer` |
+| `GET` | `/api/v1/customers/:external_id/current_usage` | `lago.customers.findCustomerCurrentUsage` |
 | `POST` | `/api/v1/taxes` | `lago.taxes.createTax` |
 | `GET` | `/api/v1/taxes` | `lago.taxes.findAllTaxes` |
 | `GET` | `/api/v1/taxes/:code` | `lago.taxes.findTax` |
 | `DELETE` | `/api/v1/taxes/:code` | `lago.taxes.destroyTax` |
+| `POST` | `/api/v1/add_ons` | `lago.addOns.createAddOn` |
+| `GET` | `/api/v1/add_ons` | `lago.addOns.findAllAddOns` |
+| `GET` | `/api/v1/add_ons/:code` | `lago.addOns.findAddOn` |
+| `DELETE` | `/api/v1/add_ons/:code` | `lago.addOns.destroyAddOn` |
+| `POST` | `/api/v1/billable_metrics` | `lago.billableMetrics.createBillableMetric` |
+| `GET` | `/api/v1/billable_metrics` | `lago.billableMetrics.findAllBillableMetrics` |
+| `DELETE` | `/api/v1/billable_metrics/:code` | `lago.billableMetrics.destroyBillableMetric` |
+| `POST` | `/api/v1/plans` | `lago.plans.createPlan` |
+| `GET` | `/api/v1/plans` | `lago.plans.findAllPlans` |
+| `GET` | `/api/v1/plans/:code` | `lago.plans.findPlan` |
+| `PUT` | `/api/v1/plans/:code` | `lago.plans.updatePlan` |
+| `DELETE` | `/api/v1/plans/:code` | `lago.plans.destroyPlan` |
+| `POST` | `/api/v1/subscriptions` | `lago.subscriptions.createSubscription` |
+| `GET` | `/api/v1/subscriptions` | `lago.subscriptions.findAllSubscriptions` |
+| `GET` | `/api/v1/subscriptions/:external_id` | (single, plan embedded) |
+| `DELETE` | `/api/v1/subscriptions/:external_id` | `lago.subscriptions.destroySubscription` |
+| `POST` | `/api/v1/events` | `lago.events.createEvent` |
 | `GET` | `/healthz` | (internal health check) |
+
+### Phase 3 (not yet implemented)
+
+- `POST/GET /invoices` + `PUT /invoices/:id/void` (one-off invoices with
+  `fees: [{ add_on_code, ... }]`)
+- `POST/GET /credit_notes` (with `Idempotency-Key` header)
+- Webhook delivery (HMAC-SHA256, exponential backoff, dead-letter table)
+- Period-closing cron + automatic invoice issuance
 
 ### Customer semantics
 

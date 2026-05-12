@@ -409,16 +409,16 @@ describe("fixture replay — golden bytes from Numaris → Lago Cloud", () => {
       },
     });
 
-    const req = await loadJson<{ event: { timestamp: number } }>(
-      "04-events-add.request.json",
-    );
+    const req = await loadJson<{
+      event: { timestamp: number; transaction_id: string };
+    }>("04-events-add.request.json");
     const res = await api.post<{ event: Record<string, unknown> }>(
       "/events",
       req,
     );
     expect(res.status).toBe(200);
     const e = res.body.event;
-    expect(e["transaction_id"]).toBe(req.event && (req as { event: { transaction_id: string } }).event.transaction_id);
+    expect(e["transaction_id"]).toBe(req.event.transaction_id);
     expect(e["external_subscription_id"]).toBe(
       "sub-carga-express-mx-combustible-a681d853",
     );
@@ -470,6 +470,94 @@ describe("fixture replay — golden bytes from Numaris → Lago Cloud", () => {
     expect(res.status).toBe(200);
     expect(res.body.event["lago_customer_id"]).toBeNull();
     expect(res.body.event["lago_subscription_id"]).toBeNull();
+  });
+
+  it("08 — GET /current_usage with no events returns zero-usage canonical shape", async () => {
+    // Setup matching the fixture: customer with calendar sub, no events.
+    await api.post("/customers", {
+      customer: {
+        external_id: "carga-express-mx",
+        currency: "MXN",
+        timezone: "UTC",
+      },
+    });
+    const monthlyBmRes = await api.get<{
+      billable_metric: { lago_id: string };
+    }>("/billable_metrics/bm-carga-express-mx-combustible-7be0a53d");
+    if (monthlyBmRes.status !== 200) {
+      await api.post("/billable_metrics", {
+        billable_metric: {
+          name: "Unidades activas — Combustible",
+          code: "bm-carga-express-mx-combustible-7be0a53d",
+          aggregation_type: "unique_count_agg",
+          field_name: "unit_external_id",
+          recurring: true,
+        },
+      });
+    }
+    await api.post("/billable_metrics", {
+      billable_metric: {
+        name: "Instalaciones nuevas — Combustible",
+        code: "bm-setup-carga-express-mx-combustible-0c46b355",
+        aggregation_type: "unique_count_agg",
+        field_name: "unit_external_id",
+        recurring: false,
+      },
+    });
+    const monthlyBm = await api.get<{
+      billable_metric: { lago_id: string };
+    }>("/billable_metrics/bm-carga-express-mx-combustible-7be0a53d");
+    const setupBm = await api.get<{
+      billable_metric: { lago_id: string };
+    }>("/billable_metrics/bm-setup-carga-express-mx-combustible-0c46b355");
+    const existingPlan = await api.get(
+      "/plans/plan-carga-express-mx-combustible-79844679",
+    );
+    if (existingPlan.status !== 200) {
+      const req = await loadJson<{
+        plan: { charges: Array<{ billable_metric_id: string }> };
+      }>("06-plans-create.request.json");
+      req.plan.charges[0]!.billable_metric_id =
+        monthlyBm.body.billable_metric.lago_id;
+      req.plan.charges[1]!.billable_metric_id =
+        setupBm.body.billable_metric.lago_id;
+      await api.post("/plans", req);
+    }
+    await api.post("/subscriptions", {
+      subscription: {
+        external_customer_id: "carga-express-mx",
+        plan_code: "plan-carga-express-mx-combustible-79844679",
+        external_id: "sub-carga-express-mx-combustible-current-usage",
+        billing_time: "calendar",
+      },
+    });
+
+    const res = await api.get<{
+      customer_usage: {
+        amount_cents: number;
+        total_amount_cents: number;
+        taxes_amount_cents: number;
+        lago_invoice_id: null;
+        charges_usage: Array<{
+          units: string;
+          events_count: number;
+          amount_cents: number;
+          billable_metric: { code: string };
+        }>;
+      };
+    }>(
+      "/customers/carga-express-mx/current_usage?external_subscription_id=sub-carga-express-mx-combustible-current-usage&apply_taxes=false",
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.customer_usage.amount_cents).toBe(0);
+    expect(res.body.customer_usage.taxes_amount_cents).toBe(0);
+    expect(res.body.customer_usage.lago_invoice_id).toBeNull();
+    expect(res.body.customer_usage.charges_usage).toHaveLength(2);
+    for (const c of res.body.customer_usage.charges_usage) {
+      expect(c.units).toBe("0.0");
+      expect(c.events_count).toBe(0);
+      expect(c.amount_cents).toBe(0);
+    }
   });
 
   it("PUT /customers/:external_id returns Lago's 404 resource_not_found", async () => {

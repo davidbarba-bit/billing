@@ -11,6 +11,7 @@ import { buildBillableMetricsRouter } from "./routes/billable_metrics.js";
 import { buildPlansRouter } from "./routes/plans.js";
 import { buildSubscriptionsRouter } from "./routes/subscriptions.js";
 import { buildEventsRouter } from "./routes/events.js";
+import { buildCurrentUsageRouter } from "./routes/current_usage.js";
 
 export function buildApp(db: DB, logger: Logger): Express {
   const app = express();
@@ -31,6 +32,7 @@ export function buildApp(db: DB, logger: Logger): Express {
   api.use(buildPlansRouter(db));
   api.use(buildSubscriptionsRouter(db));
   api.use(buildEventsRouter(db));
+  api.use(buildCurrentUsageRouter(db));
 
   app.use("/api/v1", api);
 
