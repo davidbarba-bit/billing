@@ -290,6 +290,82 @@ describe("fixture replay — golden bytes from Numaris → Lago Cloud", () => {
     expect(actual).toEqual(want);
   });
 
+  it("07a — POST /subscriptions anniversary (future) → pending", async () => {
+    // Setup: tax, customer, BMs, plan.
+    await api.post("/taxes", await loadJson("03-taxes-create.request.json"));
+    await api.post(
+      "/customers",
+      await loadJson("01a-customers-create.request.json"),
+    );
+    // BMs and plan may have been created by an earlier fixture test in this
+    // file; fall back to GET when create returns 422 value_already_exist.
+    const ensureBm = async (
+      code: string,
+      recurring: boolean,
+    ): Promise<string> => {
+      const got = await api.get<{ billable_metric: { lago_id: string } }>(
+        `/billable_metrics/${code}`,
+      );
+      if (got.status === 200) return got.body.billable_metric.lago_id;
+      const made = await api.post<{ billable_metric: { lago_id: string } }>(
+        "/billable_metrics",
+        {
+          billable_metric: {
+            name: code,
+            code,
+            aggregation_type: "unique_count_agg",
+            field_name: "unit_external_id",
+            recurring,
+          },
+        },
+      );
+      return made.body.billable_metric.lago_id;
+    };
+    const monthlyId = await ensureBm(
+      "bm-carga-express-mx-combustible-7be0a53d",
+      true,
+    );
+    const setupId = await ensureBm(
+      "bm-setup-carga-express-mx-combustible-0c46b355",
+      false,
+    );
+
+    const planCode = "plan-carga-express-mx-combustible-79844679";
+    const existingPlan = await api.get(`/plans/${planCode}`);
+    if (existingPlan.status !== 200) {
+      const planReq = await loadJson<{
+        plan: { charges: Array<{ billable_metric_id: string }> };
+      }>("06-plans-create.request.json");
+      planReq.plan.charges[0]!.billable_metric_id = monthlyId;
+      planReq.plan.charges[1]!.billable_metric_id = setupId;
+      await api.post("/plans", planReq);
+    }
+
+    // Move the captured `subscription_at` into the future to keep status:pending.
+    const subReq = await loadJson<{
+      subscription: { subscription_at: string };
+    }>("07a-subscriptions-anniversary.request.json");
+    subReq.subscription.subscription_at = new Date(
+      Date.now() + 60 * 24 * 60 * 60 * 1000,
+    ).toISOString();
+
+    const res = await api.post<{ subscription: Record<string, unknown> }>(
+      "/subscriptions",
+      subReq,
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.subscription["status"]).toBe("pending");
+    expect(res.body.subscription["billing_time"]).toBe("anniversary");
+    expect(res.body.subscription["started_at"]).toBeNull();
+    expect(res.body.subscription["current_billing_period_started_at"]).toBeNull();
+    // Plan embed present, matches the captured shape.
+    const planEmbed = res.body.subscription["plan"] as Record<string, unknown>;
+    expect(planEmbed["code"]).toBe(
+      "plan-carga-express-mx-combustible-79844679",
+    );
+    expect((planEmbed["charges"] as unknown[]).length).toBe(2);
+  });
+
   it("PUT /customers/:external_id returns Lago's 404 resource_not_found", async () => {
     const res = await api.put<{ status: number; code: string }>(
       "/customers/carga-express-mx",
