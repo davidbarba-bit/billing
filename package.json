@@ -1,0 +1,45 @@
+{
+  "name": "mini-lago",
+  "version": "0.1.0",
+  "description": "Self-hosted, Lago-compatible billing engine (subset of the Lago REST API).",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:integration": "vitest run tests/integration",
+    "test:unit": "vitest run tests/unit",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . --ext .ts",
+    "db:push": "tsx node_modules/drizzle-kit/bin.cjs push",
+    "db:migrate": "tsx node_modules/drizzle-kit/bin.cjs migrate",
+    "db:generate": "tsx node_modules/drizzle-kit/bin.cjs generate"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.36.4",
+    "express": "^5.0.1",
+    "pg": "^8.13.1",
+    "pino": "^9.5.0",
+    "pino-http": "^10.3.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.0",
+    "@types/pg": "^8.11.10",
+    "@typescript-eslint/eslint-plugin": "^8.16.0",
+    "@typescript-eslint/parser": "^8.16.0",
+    "drizzle-kit": "^0.30.0",
+    "eslint": "^9.16.0",
+    "lago-javascript-client": "^1.30.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.9.0",
+    "vitest": "^2.1.8"
+  }
+}

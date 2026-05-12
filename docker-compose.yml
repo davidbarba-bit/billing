@@ -1,0 +1,38 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: lago
+      POSTGRES_PASSWORD: lago
+      POSTGRES_DB: lago
+    ports:
+      - "5432:5432"
+    volumes:
+      - lago_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lago -d lago"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: 3000
+      NODE_ENV: production
+      DATABASE_URL: postgres://lago:lago@postgres:5432/lago
+      LAGO_API_KEYS: ${LAGO_API_KEYS:-dev-key-1:default:Default Organization}
+      WEBHOOK_SIGNATURE_KEY: ${WEBHOOK_SIGNATURE_KEY:-replace-me}
+      WEBHOOK_URL: ${WEBHOOK_URL:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      PERIOD_CLOSE_INTERVAL_MS: ${PERIOD_CLOSE_INTERVAL_MS:-3600000}
+    ports:
+      - "3000:3000"
+
+volumes:
+  lago_pgdata:
