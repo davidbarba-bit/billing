@@ -24,8 +24,8 @@
     "legal_number": null,
     "currency": "MXN",
     "tax_identification_number": "CEM250101AAA",
-    "timezone": null,
-    "applicable_timezone": "UTC",
+    "timezone": "America/Mexico_City",
+    "applicable_timezone": "America/Mexico_City",
     "net_payment_term": null,
     "external_salesforce_id": null,
     "finalize_zero_amount_invoice": "inherit",
@@ -43,7 +43,7 @@
       "state": null,
       "country": null
     },
-    "metadata": [],
+    "metadata": {},
     "taxes": [
       {
         "lago_id": "862f693f-1735-47ca-a237-46ce3423e9eb",

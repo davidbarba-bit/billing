@@ -6,6 +6,7 @@ export const organizations = pgTable("organizations", {
   name: text("name").notNull(),
   apiKeyHash: text("api_key_hash").notNull().unique(),
   webhookUrl: text("webhook_url"),
+  timezone: text("timezone").notNull().default("UTC"),
   customerSequence: integer("customer_sequence").notNull().default(0),
   invoiceSequence: integer("invoice_sequence").notNull().default(0),
   creditNoteSequence: integer("credit_note_sequence").notNull().default(0),

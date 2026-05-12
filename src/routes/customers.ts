@@ -66,7 +66,7 @@ export type CustomerResponse = {
   finalize_zero_amount_invoice: string;
   billing_configuration: Record<string, unknown>;
   shipping_address: Record<string, unknown>;
-  metadata: unknown[];
+  metadata: Record<string, unknown>;
   taxes: EmbeddedTax[];
   integration_customers: unknown[];
 };
@@ -112,7 +112,7 @@ export function serializeCustomer(
     shipping_address:
       (c.shippingAddress as Record<string, unknown> | null) ??
       DEFAULT_SHIPPING_ADDRESS,
-    metadata: (c.metadata as unknown[] | null) ?? [],
+    metadata: (c.metadata as Record<string, unknown> | null) ?? {},
     taxes: appliedTaxes,
     integration_customers: (c.integrationCustomers as unknown[] | null) ?? [],
   };
@@ -440,7 +440,7 @@ export function buildCustomersRouter(db: DB): Router {
 
       res.json({
         customers: rows.map((r) =>
-          serializeCustomer(r, taxMap.get(r.id) ?? []),
+          serializeCustomer(r, taxMap.get(r.id) ?? [], org.timezone),
         ),
         meta: buildMeta(page, per_page, total),
       });
@@ -466,7 +466,7 @@ export function buildCustomersRouter(db: DB): Router {
         .limit(1);
       if (!row) throw notFound("customer");
       const embedded = await loadTaxesForCustomer(db, org.id, row.id);
-      res.json({ customer: serializeCustomer(row, embedded) });
+      res.json({ customer: serializeCustomer(row, embedded, org.timezone) });
     }),
   );
 

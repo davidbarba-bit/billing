@@ -1,0 +1,13 @@
+{
+  "add_on": {
+    "lago_id": "f8a1e293-3c1d-4501-9bd5-2a7c14e54e89",
+    "name": "Setup Servicio Combustible — Carga Express MX",
+    "invoice_display_name": null,
+    "code": "setup-carga-express-mx-combustible",
+    "amount_cents": 120000,
+    "amount_currency": "MXN",
+    "created_at": "2026-05-12T22:20:22Z",
+    "description": "Cobro único de instalación del servicio Combustible para Carga Express MX.",
+    "taxes": []
+  }
+}

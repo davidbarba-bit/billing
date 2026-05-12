@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isValidIanaTimezone } from "../lib/timezone.js";
 
 export const BillingConfigurationSchema = z
   .object({
@@ -65,7 +66,10 @@ export const CustomerInputSchema = z.object({
     .string()
     .regex(/^[A-Z]{3}$/u, "currency must be a 3-letter ISO code")
     .nullish(),
-  timezone: nullableString,
+  timezone: z
+    .string()
+    .refine(isValidIanaTimezone, "timezone must be a valid IANA identifier")
+    .nullish(),
   net_payment_term: z.number().int().nonnegative().nullish(),
   external_salesforce_id: nullableString,
   finalize_zero_amount_invoice: z
@@ -76,7 +80,13 @@ export const CustomerInputSchema = z.object({
   billing_configuration: BillingConfigurationSchema.nullish(),
   shipping_address: ShippingAddressSchema.nullish(),
   integration_customers: z.array(IntegrationCustomerSchema).nullish(),
-  metadata: z.array(z.record(z.string(), z.unknown())).nullish(),
+  // D3: metadata is an arbitrary object, not Lago Cloud's array of records.
+  metadata: z
+    .record(
+      z.string(),
+      z.union([z.string(), z.number(), z.boolean(), z.null()]),
+    )
+    .nullish(),
 
   // Tax linkage (Lago: array of tax codes already known)
   tax_codes: z.array(z.string()).nullish(),

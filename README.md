@@ -116,10 +116,13 @@ against a real Postgres — see `tests/helpers/lago-sdk.ts`.
     persist).
   - Unknown codes return `422 validation_errors` with
     `error_details.tax_codes: ["value_is_invalid"]`.
-- Response shape matches Lago's canonical customer (all nullable fields
-  present, `metadata: []`, `taxes: [...]` embedded, `billing_configuration`
-  and `shipping_address` with default null keys, `applicable_timezone` falls
-  back to `"UTC"`).
+- Response shape: all nullable fields present, `metadata: {}` as an arbitrary
+  object (`Record<string, string|number|boolean|null>`, NOT Lago Cloud's
+  array of records — see D3), `taxes: [...]` embedded with live counters,
+  `billing_configuration` and `shipping_address` with default null keys.
+- `applicable_timezone` cascades `customer.timezone → organization.timezone →
+  "UTC"` (D4). `customer.timezone` is validated as an IANA identifier; invalid
+  values return `422 validation_errors`.
 - `sequential_id` is per-org auto-increment; `slug` is `{ORG3}-{HASH4}-{NNN}`
   (e.g. `NUM-FC2D-009`). Numaris ignores both fields; they exist for
   Lago-shape compatibility.

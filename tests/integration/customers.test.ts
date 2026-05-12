@@ -22,7 +22,7 @@ type Customer = {
   slug: string;
   applicable_timezone: string;
   finalize_zero_amount_invoice: string;
-  metadata: unknown[];
+  metadata: Record<string, unknown>;
   taxes: EmbeddedTax[];
   integration_customers: unknown[];
   billing_configuration: Record<string, unknown>;
@@ -87,7 +87,7 @@ describe("customers", () => {
     expect(c.tax_identification_number).toBe("ACME250101AAA");
     expect(c.applicable_timezone).toBe("America/Mexico_City");
     expect(c.finalize_zero_amount_invoice).toBe("inherit");
-    expect(c.metadata).toEqual([]);
+    expect(c.metadata).toEqual({});
     expect(c.taxes).toEqual([]);
     expect(c.integration_customers).toEqual([]);
     expect(c.sequential_id).toBeGreaterThan(0);
@@ -100,6 +100,27 @@ describe("customers", () => {
       customer: { external_id: "cust_no_tz" },
     });
     expect(res.body.customer.applicable_timezone).toBe("UTC");
+  });
+
+  it("rejects 422 when customer.timezone is not a valid IANA id (D4)", async () => {
+    const res = await api.post<{ code: string }>("/customers", {
+      customer: { external_id: "cust_bad_tz", timezone: "Mars/Olympus" },
+    });
+    expect(res.status).toBe(422);
+    expect(res.body.code).toBe("validation_errors");
+  });
+
+  it("stores customer.metadata as an object per D3", async () => {
+    const res = await api.post<CustomerBody>("/customers", {
+      customer: {
+        external_id: "cust_metadata",
+        metadata: { invoiceTemplate: "premium", maxRetries: 3 },
+      },
+    });
+    expect(res.body.customer.metadata).toEqual({
+      invoiceTemplate: "premium",
+      maxRetries: 3,
+    });
   });
 
   it("upserts on duplicate external_id and merges only sent fields", async () => {
