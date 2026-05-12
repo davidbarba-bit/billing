@@ -103,18 +103,26 @@ against a real Postgres — see `tests/helpers/lago-sdk.ts`.
 
 ### Customer semantics
 
-- **Strict create** on `(organization_id, external_id)`: matches Lago's real
-  behavior. A second `POST` with the same `external_id` returns
-  `422 validation_errors` with
-  `error_details.external_id: ["value_already_exist"]`.
-- `tax_codes: ["iva-mx-16"]` at create time links the customer to the listed
-  taxes (validated against existing taxes; unknown codes → 422).
+- **`POST /customers` is upsert** on `(organization_id, external_id)`. Lago
+  itself does NOT expose `PUT /customers/:external_id` — that path responds
+  `404 resource_not_found`. Numaris and other clients mutate customers by
+  re-`POST`ing.
+- Field preservation: a re-POST only writes the fields **present** in the
+  request body. Unsent fields are preserved. Explicit `null` clears the field
+  (e.g. `"email": null` reverts it to null).
+- `tax_codes: ["iva-mx-16"]`:
+  - At create time → links the customer to the listed taxes.
+  - On re-POST → **replaces** the explicit list (org-wide taxes always
+    persist).
+  - Unknown codes return `422 validation_errors` with
+    `error_details.tax_codes: ["value_is_invalid"]`.
 - Response shape matches Lago's canonical customer (all nullable fields
   present, `metadata: []`, `taxes: [...]` embedded, `billing_configuration`
   and `shipping_address` with default null keys, `applicable_timezone` falls
   back to `"UTC"`).
 - `sequential_id` is per-org auto-increment; `slug` is `{ORG3}-{HASH4}-{NNN}`
-  (e.g. `NUM-FC2D-009`).
+  (e.g. `NUM-FC2D-009`). Numaris ignores both fields; they exist for
+  Lago-shape compatibility.
 - Soft delete: `DELETE` flips `deleted_at` and subsequent reads return 404.
 
 ### Tax semantics
@@ -175,6 +183,15 @@ Integration tests:
 2. Mint a new organization with a random API key.
 3. Spin a real `express` server on an ephemeral port.
 4. Exercise the endpoints with both raw `fetch` and the official SDK.
+
+### Golden fixtures
+
+`tests/fixtures/lago-pairs/` holds the literal request/response bytes
+captured from Numaris Billing → Lago Cloud. `fixture-replay.test.ts`
+POSTs each request fixture against mini-Lago and diffs the response
+field-by-field (excluding volatile keys: `lago_id`, `created_at`,
+`sequential_id`, `slug`, etc.). This is the trip-wire that catches shape
+regressions when we extend the API.
 
 ## Differences vs. upstream Lago (phase 1)
 

@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { and, eq, inArray, sql, isNull, desc } from "drizzle-orm";
+import { and, eq, inArray, notInArray, sql, isNull, desc } from "drizzle-orm";
 import type { DB } from "../db/client.js";
 import {
   customers,
@@ -7,11 +7,12 @@ import {
   organizations,
   taxes,
   type Customer,
+  type NewCustomer,
   type Tax,
 } from "../db/schema/index.js";
 import { requireOrg } from "../lib/auth.js";
 import { asyncHandler, pathParam } from "../lib/async.js";
-import { notFound, unprocessable } from "../lib/errors.js";
+import { notFound, unprocessable, LagoError } from "../lib/errors.js";
 import { PaginationQuery, buildMeta } from "../lib/pagination.js";
 import { buildCustomerSlug } from "../lib/slug.js";
 import { serializeTaxEmbedded, type EmbeddedTax } from "./taxes.js";
@@ -117,11 +118,6 @@ export function serializeCustomer(
   };
 }
 
-/**
- * Resolves the embedded taxes for a customer, complete with the live counters
- * Lago returns (customers_count, etc.). Cheap enough for single-customer reads;
- * for list endpoints we batch via {@link loadTaxesForCustomers}.
- */
 async function loadTaxesForCustomer(
   db: DB,
   orgId: string,
@@ -152,7 +148,6 @@ async function loadTaxesForCustomers(
     .innerJoin(taxes, eq(customerTaxes.taxId, taxes.id))
     .where(inArray(customerTaxes.customerId, customerIds));
 
-  // Serialize tax counters once per tax (cache by id).
   const taxCache = new Map<string, EmbeddedTax>();
   for (const r of rows) {
     let serialized = taxCache.get(r.tax.id);
@@ -189,128 +184,226 @@ async function resolveTaxCodes(
   return rows;
 }
 
+/**
+ * Builds the patch column-by-column. Only keys actually present in the raw
+ * request body are written; missing keys are preserved (matches Lago's upsert
+ * semantics: re-`POST` with a partial customer mutates only what's sent).
+ */
+function buildCustomerPatch(
+  raw: Record<string, unknown>,
+  parsed: Record<string, unknown>,
+): Partial<NewCustomer> {
+  const patch: Partial<NewCustomer> = {};
+  const has = (k: string): boolean => Object.hasOwn(raw, k);
+
+  if (has("name")) patch.name = (parsed["name"] as string | null) ?? null;
+  if (has("firstname"))
+    patch.firstname = (parsed["firstname"] as string | null) ?? null;
+  if (has("lastname"))
+    patch.lastname = (parsed["lastname"] as string | null) ?? null;
+  if (has("customer_type"))
+    patch.customerType = (parsed["customer_type"] as string | null) ?? null;
+  if (has("legal_name"))
+    patch.legalName = (parsed["legal_name"] as string | null) ?? null;
+  if (has("legal_number"))
+    patch.legalNumber = (parsed["legal_number"] as string | null) ?? null;
+  if (has("tax_identification_number"))
+    patch.taxIdentificationNumber =
+      (parsed["tax_identification_number"] as string | null) ?? null;
+  if (has("email")) {
+    const e = parsed["email"] as string | null | undefined;
+    patch.email = e && e.length > 0 ? e : null;
+  }
+  if (has("phone")) patch.phone = (parsed["phone"] as string | null) ?? null;
+  if (has("url")) patch.url = (parsed["url"] as string | null) ?? null;
+  if (has("logo_url"))
+    patch.logoUrl = (parsed["logo_url"] as string | null) ?? null;
+  if (has("address_line1"))
+    patch.addressLine1 = (parsed["address_line1"] as string | null) ?? null;
+  if (has("address_line2"))
+    patch.addressLine2 = (parsed["address_line2"] as string | null) ?? null;
+  if (has("city")) patch.city = (parsed["city"] as string | null) ?? null;
+  if (has("state")) patch.state = (parsed["state"] as string | null) ?? null;
+  if (has("zipcode"))
+    patch.zipcode = (parsed["zipcode"] as string | null) ?? null;
+  if (has("country"))
+    patch.country = (parsed["country"] as string | null) ?? null;
+  if (has("currency"))
+    patch.currency = (parsed["currency"] as string | null) ?? null;
+  if (has("timezone"))
+    patch.timezone = (parsed["timezone"] as string | null) ?? null;
+  if (has("net_payment_term"))
+    patch.netPaymentTerm = (parsed["net_payment_term"] as number | null) ?? null;
+  if (has("external_salesforce_id"))
+    patch.externalSalesforceId =
+      (parsed["external_salesforce_id"] as string | null) ?? null;
+  if (has("finalize_zero_amount_invoice"))
+    patch.finalizeZeroAmountInvoice =
+      (parsed["finalize_zero_amount_invoice"] as string | null) ?? "inherit";
+  if (has("billing_configuration"))
+    patch.billingConfiguration =
+      (parsed["billing_configuration"] as Record<string, unknown> | null) ?? null;
+  if (has("shipping_address"))
+    patch.shippingAddress =
+      (parsed["shipping_address"] as Record<string, unknown> | null) ?? null;
+  if (has("integration_customers"))
+    patch.integrationCustomers =
+      (parsed["integration_customers"] as unknown[] | null) ?? null;
+  if (has("metadata"))
+    patch.metadata = (parsed["metadata"] as unknown[] | null) ?? null;
+
+  return patch;
+}
+
+/**
+ * Replaces the explicit tax_codes for a customer. Org-wide taxes
+ * (applied_to_organization=true) are always retained — they don't belong to
+ * the user-managed set.
+ */
+async function syncCustomerTaxCodes(
+  tx: DB,
+  orgId: string,
+  customerId: string,
+  codes: readonly string[],
+): Promise<void> {
+  const resolved = await resolveTaxCodes(tx, orgId, codes);
+  const explicitIds = new Set(resolved.map((t) => t.id));
+
+  const orgWide = await tx
+    .select({ id: taxes.id })
+    .from(taxes)
+    .where(
+      and(
+        eq(taxes.organizationId, orgId),
+        eq(taxes.appliedToOrganization, true),
+      ),
+    );
+  const orgWideIds = new Set(orgWide.map((t) => t.id));
+
+  const keep = new Set([...explicitIds, ...orgWideIds]);
+
+  // Drop links that are neither explicit nor org-wide.
+  if (keep.size === 0) {
+    await tx.delete(customerTaxes).where(eq(customerTaxes.customerId, customerId));
+  } else {
+    await tx
+      .delete(customerTaxes)
+      .where(
+        and(
+          eq(customerTaxes.customerId, customerId),
+          notInArray(customerTaxes.taxId, [...keep]),
+        ),
+      );
+  }
+
+  if (keep.size > 0) {
+    await tx
+      .insert(customerTaxes)
+      .values([...keep].map((taxId) => ({ customerId, taxId })))
+      .onConflictDoNothing();
+  }
+}
+
 export function buildCustomersRouter(db: DB): Router {
   const router = Router();
 
-  // POST /customers — STRICT: 422 on duplicate external_id (Lago behavior).
+  // POST /customers — UPSERT by (org, external_id). Matches Lago: re-POST with
+  // the same external_id mutates only the fields sent; unsent fields persist.
+  // No PUT /customers/:external_id endpoint exists in Lago — that route is
+  // explicitly answered with 404 resource_not_found below.
   router.post(
     "/customers",
     asyncHandler(async (req, res) => {
       const org = requireOrg(req);
-      const { customer: input } = CreateCustomerRequest.parse(req.body);
+      const rawBody = req.body as { customer?: Record<string, unknown> };
+      const rawCustomer = rawBody?.customer ?? {};
+      const parsed = CreateCustomerRequest.parse(rawBody).customer as Record<
+        string,
+        unknown
+      >;
 
-      const created = await db.transaction(async (tx) => {
-        const existing = await tx
-          .select({ id: customers.id })
+      const customer = await db.transaction(async (tx) => {
+        const externalId = parsed["external_id"] as string;
+        const [existing] = await tx
+          .select()
           .from(customers)
           .where(
             and(
               eq(customers.organizationId, org.id),
-              eq(customers.externalId, input.external_id),
+              eq(customers.externalId, externalId),
               isNull(customers.deletedAt),
             ),
           )
           .limit(1);
 
-        if (existing.length > 0) {
-          throw unprocessable(
-            "validation_errors",
-            "Unprocessable Entity",
-            { external_id: ["value_already_exist"] },
-          );
+        let row: Customer;
+
+        if (existing) {
+          const patch = buildCustomerPatch(rawCustomer, parsed);
+          patch.updatedAt = new Date();
+          const [updated] = await tx
+            .update(customers)
+            .set(patch)
+            .where(eq(customers.id, existing.id))
+            .returning();
+          if (!updated) throw new Error("update customer failed");
+          row = updated;
+        } else {
+          const [seqRow] = await tx
+            .update(organizations)
+            .set({
+              customerSequence: sql`${organizations.customerSequence} + 1`,
+              updatedAt: new Date(),
+            })
+            .where(eq(organizations.id, org.id))
+            .returning({ seq: organizations.customerSequence });
+          if (!seqRow) throw new Error("failed to bump customer sequence");
+          const sequentialId = seqRow.seq;
+          const slug = buildCustomerSlug(org.slug, org.id, sequentialId);
+
+          const insertPatch = buildCustomerPatch(rawCustomer, parsed);
+          const values: NewCustomer = {
+            organizationId: org.id,
+            externalId,
+            sequentialId,
+            slug,
+            finalizeZeroAmountInvoice: "inherit",
+            ...insertPatch,
+          };
+          const [inserted] = await tx.insert(customers).values(values).returning();
+          if (!inserted) throw new Error("insert customer failed");
+          row = inserted;
         }
 
-        // Bump per-org sequential id atomically.
-        const [seqRow] = await tx
-          .update(organizations)
-          .set({
-            customerSequence: sql`${organizations.customerSequence} + 1`,
-            updatedAt: new Date(),
-          })
-          .where(eq(organizations.id, org.id))
-          .returning({ seq: organizations.customerSequence });
-        if (!seqRow) throw new Error("failed to bump customer sequence");
-        const sequentialId = seqRow.seq;
-        const slug = buildCustomerSlug(org.slug, org.id, sequentialId);
-
-        // Resolve & validate any tax_codes BEFORE inserting.
-        const explicitTaxes = await resolveTaxCodes(
-          tx,
-          org.id,
-          input.tax_codes ?? [],
-        );
-
-        // Always pull org-wide taxes too.
-        const orgWideTaxes = await tx
-          .select({ id: taxes.id })
-          .from(taxes)
-          .where(
-            and(
-              eq(taxes.organizationId, org.id),
-              eq(taxes.appliedToOrganization, true),
-            ),
-          );
-
-        const values = {
-          organizationId: org.id,
-          externalId: input.external_id,
-          sequentialId,
-          slug,
-          name: input.name ?? null,
-          firstname: input.firstname ?? null,
-          lastname: input.lastname ?? null,
-          customerType: input.customer_type ?? null,
-          legalName: input.legal_name ?? null,
-          legalNumber: input.legal_number ?? null,
-          taxIdentificationNumber: input.tax_identification_number ?? null,
-          email:
-            input.email && input.email.length > 0 ? input.email : null,
-          phone: input.phone ?? null,
-          url: input.url ?? null,
-          logoUrl: input.logo_url ?? null,
-          addressLine1: input.address_line1 ?? null,
-          addressLine2: input.address_line2 ?? null,
-          city: input.city ?? null,
-          state: input.state ?? null,
-          zipcode: input.zipcode ?? null,
-          country: input.country ?? null,
-          currency: input.currency ?? null,
-          timezone: input.timezone ?? null,
-          netPaymentTerm: input.net_payment_term ?? null,
-          externalSalesforceId: input.external_salesforce_id ?? null,
-          finalizeZeroAmountInvoice:
-            input.finalize_zero_amount_invoice ?? "inherit",
-          billingConfiguration: input.billing_configuration ?? null,
-          shippingAddress: input.shipping_address ?? null,
-          integrationCustomers: input.integration_customers ?? null,
-          metadata: input.metadata ?? null,
-        };
-
-        const [inserted] = await tx.insert(customers).values(values).returning();
-        if (!inserted) throw new Error("insert customer failed");
-
-        const taxLinks = new Map<string, true>();
-        for (const t of explicitTaxes) taxLinks.set(t.id, true);
-        for (const t of orgWideTaxes) taxLinks.set(t.id, true);
-        if (taxLinks.size > 0) {
-          await tx
-            .insert(customerTaxes)
-            .values(
-              [...taxLinks.keys()].map((taxId) => ({
-                customerId: inserted.id,
-                taxId,
-              })),
-            )
-            .onConflictDoNothing();
+        // Sync taxes. tax_codes is REPLACE-semantics when sent; preserved when
+        // not sent. Org-wide taxes are always retained on the customer.
+        if (Object.hasOwn(rawCustomer, "tax_codes")) {
+          const codes = (parsed["tax_codes"] as string[] | null) ?? [];
+          await syncCustomerTaxCodes(tx, org.id, row.id, codes);
+        } else if (!existing) {
+          // First create with no tax_codes provided: still link org-wide.
+          await syncCustomerTaxCodes(tx, org.id, row.id, []);
         }
 
-        return inserted;
+        return row;
       });
 
-      const embedded = await loadTaxesForCustomer(db, org.id, created.id);
-      res.status(200).json({ customer: serializeCustomer(created, embedded) });
+      const embedded = await loadTaxesForCustomer(db, org.id, customer.id);
+      res.status(200).json({ customer: serializeCustomer(customer, embedded) });
     }),
   );
+
+  // PUT /customers/:external_id — Lago does NOT expose this; return its exact
+  // 404 shape so Numaris (or any other client) can detect "you meant POST".
+  router.put("/customers/:external_id", (_req, _res, next) => {
+    next(
+      new LagoError({
+        status: 404,
+        error: "Not Found",
+        code: "resource_not_found",
+      }),
+    );
+  });
 
   // GET /customers — list
   router.get(

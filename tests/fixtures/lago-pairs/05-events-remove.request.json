@@ -1,0 +1,14 @@
+{
+  "event": {
+    "transaction_id": "sub-carga-express-mx-combustible-a681d853-remove-unit-veh-001-2026-05",
+    "external_subscription_id": "sub-carga-express-mx-combustible-a681d853",
+    "code": "bm-carga-express-mx-combustible-7be0a53d",
+    "timestamp": 1747166400,
+    "properties": {
+      "unit_external_id": "unit-veh-001",
+      "unit_label": "Camion 001",
+      "kind": "monthly-remove",
+      "operation_type": "remove"
+    }
+  }
+}

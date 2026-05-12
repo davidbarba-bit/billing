@@ -102,21 +102,81 @@ describe("customers", () => {
     expect(res.body.customer.applicable_timezone).toBe("UTC");
   });
 
-  it("returns 422 value_already_exist on duplicate external_id (strict Lago)", async () => {
+  it("upserts on duplicate external_id and merges only sent fields", async () => {
     const first = await api.post<CustomerBody>("/customers", {
-      customer: { external_id: "cust_dup", name: "v1" },
+      customer: {
+        external_id: "cust_dup",
+        name: "v1",
+        currency: "USD",
+        country: "US",
+        tax_identification_number: "RFC123",
+      },
     });
     expect(first.status).toBe(200);
+    const initialLagoId = first.body.customer.lago_id;
 
-    const second = await api.post<{
-      code: string;
-      error_details: Record<string, string[]>;
-    }>("/customers", { customer: { external_id: "cust_dup", name: "v2" } });
-    expect(second.status).toBe(422);
-    expect(second.body.code).toBe("validation_errors");
-    expect(second.body.error_details).toEqual({
-      external_id: ["value_already_exist"],
+    // Re-POST with only email — everything else must persist.
+    const second = await api.post<CustomerBody>("/customers", {
+      customer: { external_id: "cust_dup", email: "new@example.test" },
     });
+    expect(second.status).toBe(200);
+    expect(second.body.customer.lago_id).toBe(initialLagoId);
+    expect(second.body.customer.email).toBe("new@example.test");
+    // Preserved:
+    expect(second.body.customer.name).toBe("v1");
+    expect(second.body.customer.currency).toBe("USD");
+    expect(second.body.customer.country).toBe("US");
+    expect(second.body.customer.tax_identification_number).toBe("RFC123");
+  });
+
+  it("upsert with explicit null clears the field (Lago behavior)", async () => {
+    await api.post("/customers", {
+      customer: {
+        external_id: "cust_null_clear",
+        email: "before@example.test",
+      },
+    });
+    const after = await api.post<CustomerBody>("/customers", {
+      customer: { external_id: "cust_null_clear", email: null },
+    });
+    expect(after.status).toBe(200);
+    expect(after.body.customer.email).toBeNull();
+  });
+
+  it("upsert with new tax_codes REPLACES the explicit list", async () => {
+    await api.post("/taxes", {
+      tax: { name: "T1", code: "tc_a", rate: 10 },
+    });
+    await api.post("/taxes", {
+      tax: { name: "T2", code: "tc_b", rate: 5 },
+    });
+
+    const first = await api.post<CustomerBody>("/customers", {
+      customer: { external_id: "cust_taxes_replace", tax_codes: ["tc_a"] },
+    });
+    expect(first.body.customer.taxes.map((t) => t.code)).toEqual(["tc_a"]);
+
+    const second = await api.post<CustomerBody>("/customers", {
+      customer: { external_id: "cust_taxes_replace", tax_codes: ["tc_b"] },
+    });
+    expect(second.body.customer.taxes.map((t) => t.code)).toEqual(["tc_b"]);
+  });
+
+  it("PUT /customers/:external_id returns 404 resource_not_found", async () => {
+    const res = await fetch(
+      `${harness.baseUrl}/api/v1/customers/whatever`,
+      {
+        method: "PUT",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${harness.apiKey}`,
+        },
+        body: JSON.stringify({ customer: {} }),
+      },
+    );
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe("resource_not_found");
   });
 
   it("links tax_codes provided at create time", async () => {
