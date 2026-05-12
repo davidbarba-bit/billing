@@ -60,10 +60,31 @@ export const conflict = (code: string, message: string, details?: unknown) =>
 export const internal = (message = "Internal Server Error") =>
   new LagoError({ status: 500, error: message, code: "internal_error" });
 
+/**
+ * Lago wraps every body in `{ <resource>: {...} }`. Its error_details, in
+ * contrast, are flat (`{ field_name: ["..."] }`) — the wrapper is stripped.
+ * We mirror that by dropping a known leading segment from each zod path.
+ */
+const RESOURCE_WRAPPERS = new Set([
+  "customer",
+  "tax",
+  "add_on",
+  "billable_metric",
+  "plan",
+  "subscription",
+  "event",
+  "invoice",
+  "credit_note",
+]);
+
 export function fromZodError(err: z.ZodError): LagoError {
   const details: Record<string, string[]> = {};
   for (const issue of err.issues) {
-    const path = issue.path.length === 0 ? "_root" : issue.path.join(".");
+    const segments = issue.path.map((s) => String(s));
+    if (segments.length > 0 && RESOURCE_WRAPPERS.has(segments[0]!)) {
+      segments.shift();
+    }
+    const path = segments.length === 0 ? "_root" : segments.join(".");
     if (!details[path]) details[path] = [];
     details[path].push(toLagoReason(issue));
   }
