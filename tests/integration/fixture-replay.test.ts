@@ -25,6 +25,8 @@ const VOLATILE_KEYS = new Set([
   "lago_id",
   "lago_customer_id",
   "lago_subscription_id",
+  "lago_billable_metric_id",
+  "lago_item_id",
   "created_at",
   "updated_at",
   "sequential_id",
@@ -241,6 +243,50 @@ describe("fixture replay — golden bytes from Numaris → Lago Cloud", () => {
     const want = stripVolatile(expected) as {
       add_on: Record<string, unknown>;
     };
+    expect(actual).toEqual(want);
+  });
+
+  it("06 — POST /plans with prorated charge matches canonical shape", async () => {
+    // Fixture uses fixed BM UUIDs that don't exist locally; create BMs first
+    // and rewrite the charge ids to point at our locally-minted BMs.
+    const monthlyBm = await api.post<{
+      billable_metric: { lago_id: string };
+    }>("/billable_metrics", {
+      billable_metric: {
+        name: "Unidades activas — Combustible",
+        code: "bm-carga-express-mx-combustible-7be0a53d",
+        aggregation_type: "unique_count_agg",
+        field_name: "unit_external_id",
+        recurring: true,
+      },
+    });
+    const setupBm = await api.post<{
+      billable_metric: { lago_id: string };
+    }>("/billable_metrics", {
+      billable_metric: {
+        name: "Instalaciones nuevas — Combustible",
+        code: "bm-setup-carga-express-mx-combustible-0c46b355",
+        aggregation_type: "unique_count_agg",
+        field_name: "unit_external_id",
+        recurring: false,
+      },
+    });
+
+    const req = await loadJson<{
+      plan: { charges: Array<{ billable_metric_id: string }> };
+    }>("06-plans-create.request.json");
+    req.plan.charges[0]!.billable_metric_id = monthlyBm.body.billable_metric.lago_id;
+    req.plan.charges[1]!.billable_metric_id = setupBm.body.billable_metric.lago_id;
+
+    const expected = await loadJson<{ plan: Record<string, unknown> }>(
+      "06-plans-create.response.json",
+    );
+
+    const res = await api.post<{ plan: Record<string, unknown> }>("/plans", req);
+    expect(res.status).toBe(200);
+
+    const actual = stripVolatile(res.body) as { plan: Record<string, unknown> };
+    const want = stripVolatile(expected) as { plan: Record<string, unknown> };
     expect(actual).toEqual(want);
   });
 

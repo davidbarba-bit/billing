@@ -32,6 +32,7 @@ export const plans = pgTable(
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
+    invoiceDisplayName: text("invoice_display_name"),
     code: text("code").notNull(),
     description: text("description"),
     interval: text("interval").notNull().$type<PlanInterval>(),
@@ -65,6 +66,10 @@ export const planCharges = pgTable("plan_charges", {
   invoiceable: boolean("invoiceable").notNull().default(true),
   prorated: boolean("prorated").notNull().default(false),
   payInAdvance: boolean("pay_in_advance").notNull().default(false),
+  invoiceDisplayName: text("invoice_display_name"),
+  minAmountCents: bigint("min_amount_cents", { mode: "number" })
+    .notNull()
+    .default(0),
   properties: jsonb("properties").notNull().default({}),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
